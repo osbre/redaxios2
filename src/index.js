@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-import { streamRequest, streamResponse } from './progress.js';
+import { wrapRequestWithProgress, wrapResponseWithProgress } from './stream.js';
 
 /**
  * @public
@@ -226,24 +226,7 @@ function create(defaults) {
 		const method = (_method || options.method || 'get').toUpperCase();
 		const hasBody = data && method !== 'GET' && method !== 'HEAD';
 
-		// Handle upload progress
-		let request = null;
-		if (hasBody && options.onUploadProgress && typeof Request !== 'undefined' && typeof ReadableStream !== 'undefined') {
-			try {
-				request = new Request(url, {
-					method: method,
-					body: data,
-					headers: deepMerge(options.headers, customHeaders, true),
-					credentials: options.withCredentials ? 'include' : _undefined,
-					signal: options.signal
-				});
-				request = streamRequest(request, options.onUploadProgress, data);
-			} catch (e) {
-				request = null;
-			}
-		}
-
-		const fetchOptions = request ? undefined : {
+		const baseFetchOptions = {
 			method: method,
 			body: data,
 			headers: deepMerge(options.headers, customHeaders, true),
@@ -251,11 +234,23 @@ function create(defaults) {
 			signal: options.signal
 		};
 
-		return fetchFunc(request || url, request ? undefined : fetchOptions)
+		// Handle upload progress with streaming
+		let request = null;
+		if (hasBody && options.onUploadProgress && typeof Request !== 'undefined' && typeof ReadableStream !== 'undefined') {
+			try {
+				request = new Request(url, baseFetchOptions);
+				request = wrapRequestWithProgress(request, options.onUploadProgress, data);
+			} catch (e) {
+				// Fallback to regular fetch if streaming fails
+				request = null;
+			}
+		}
+
+		return fetchFunc(request || url, request ? undefined : baseFetchOptions)
 			.then((res) => {
 				// Handle download progress
 				if (options.onDownloadProgress && typeof ReadableStream !== 'undefined') {
-					res = streamResponse(res, options.onDownloadProgress);
+					res = wrapResponseWithProgress(res, options.onDownloadProgress);
 				}
 
 				for (const i in res) {
