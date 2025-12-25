@@ -362,9 +362,12 @@ function create(defaults) {
 
 const axios = create();
 
-// Export named exports for compatibility with axios
+// Export named exports for compatibility with axios (matching axios's export pattern)
 export const isCancel = axios.isCancel;
 export const isAxiosError = axios.isAxiosError;
 export const mergeConfig = axios.mergeConfig;
+export const CancelToken = axios.CancelToken;
+export const all = axios.all;
+export const spread = axios.spread;
 
 export default axios;
