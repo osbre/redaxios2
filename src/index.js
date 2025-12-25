@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+import { streamRequest, streamResponse } from './progress.js';
+
 /**
  * @public
  * @typedef Options
@@ -30,12 +32,29 @@
  * @property {string} [baseURL] a base URL from which to resolve all URLs
  * @property {typeof window.fetch} [fetch] Custom window.fetch implementation
  * @property {any} [data]
+ * @property {AbortSignal} [signal] AbortSignal for request cancellation
+ * @property {(event: AxiosProgressEvent) => void} [onUploadProgress] Upload progress callback
+ * @property {(event: AxiosProgressEvent) => void} [onDownloadProgress] Download progress callback
  */
 
 /**
  * @public
  * @typedef RequestHeaders
  * @type {{[name: string]: string} | Headers}
+ */
+
+/**
+ * @public
+ * @typedef AxiosProgressEvent
+ * @property {number} loaded Bytes loaded so far
+ * @property {number} [total] Total bytes (if computable)
+ * @property {number} [progress] Progress ratio (0-1, if total is available)
+ * @property {number} bytes Bytes transferred in this chunk
+ * @property {number} [rate] Transfer rate in bytes per second
+ * @property {number} [estimated] Estimated time remaining in seconds
+ * @property {boolean} upload Whether this is an upload event
+ * @property {boolean} download Whether this is a download event
+ * @property {boolean} lengthComputable Whether total length is computable
  */
 
 /**
@@ -110,6 +129,16 @@ function create(defaults) {
 	 * @returns {(array: Args[]) => R}
 	 */
 	redaxios.spread = (fn) => /** @type {any} */ (fn.apply.bind(fn, fn));
+
+	/**
+	 * Check if an error is a cancellation error
+	 * @public
+	 * @param {any} error
+	 * @returns {boolean}
+	 */
+	redaxios.isCancel = (error) => {
+		return (error && error.name === 'AbortError') || (error && error.code === 'ERR_CANCELED') || (error && error.message === 'canceled');
+	};
 
 	/**
 	 * @private
@@ -194,34 +223,103 @@ function create(defaults) {
 		}
 
 		const fetchFunc = options.fetch || fetch;
+		const method = (_method || options.method || 'get').toUpperCase();
+		const hasBody = data && method !== 'GET' && method !== 'HEAD';
 
-		return fetchFunc(url, {
-			method: (_method || options.method || 'get').toUpperCase(),
+		// Handle upload progress
+		let request = null;
+		if (hasBody && options.onUploadProgress && typeof Request !== 'undefined' && typeof ReadableStream !== 'undefined') {
+			try {
+				request = new Request(url, {
+					method: method,
+					body: data,
+					headers: deepMerge(options.headers, customHeaders, true),
+					credentials: options.withCredentials ? 'include' : _undefined,
+					signal: options.signal
+				});
+				request = streamRequest(request, options.onUploadProgress, data);
+			} catch (e) {
+				request = null;
+			}
+		}
+
+		const fetchOptions = request ? undefined : {
+			method: method,
 			body: data,
 			headers: deepMerge(options.headers, customHeaders, true),
-			credentials: options.withCredentials ? 'include' : _undefined
-		}).then((res) => {
-			for (const i in res) {
-				if (typeof res[i] != 'function') response[i] = res[i];
-			}
+			credentials: options.withCredentials ? 'include' : _undefined,
+			signal: options.signal
+		};
 
-			if (options.responseType == 'stream') {
-				response.data = res.body;
-				return response;
-			}
+		return fetchFunc(request || url, request ? undefined : fetchOptions)
+			.then((res) => {
+				// Handle download progress
+				if (options.onDownloadProgress && typeof ReadableStream !== 'undefined') {
+					res = streamResponse(res, options.onDownloadProgress);
+				}
 
-			return res[options.responseType || 'text']()
-				.then((data) => {
-					response.data = data;
-					// its okay if this fails: response.data will be the unparsed value:
-					response.data = JSON.parse(data);
-				})
-				.catch(Object)
-				.then(() => {
-					const ok = options.validateStatus ? options.validateStatus(res.status) : res.ok;
-					return ok ? response : Promise.reject(response);
-				});
-		});
+				for (const i in res) {
+					if (typeof res[i] != 'function') response[i] = res[i];
+				}
+
+				// Make headers accessible as object (axios/inertia compatibility)
+				if (res.headers && typeof res.headers.get === 'function') {
+					response.headers = /** @type {any} */ (new Proxy(res.headers, {
+						get(target, prop) {
+							if (typeof prop === 'string' && !['get', 'has', 'forEach', 'entries', 'keys', 'values'].includes(prop)) {
+								return target.get(prop) || target.get(prop.toLowerCase());
+							}
+							return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+						}
+					}));
+				}
+
+				if (options.responseType == 'stream') {
+					response.data = res.body;
+					return response;
+				}
+
+				return res[options.responseType || 'text']()
+					.then((data) => {
+						response.data = data;
+						if (options.responseType !== 'text' && typeof data === 'string') {
+							try {
+								response.data = JSON.parse(data);
+							} catch (e) {}
+						}
+					})
+					.catch(Object)
+					.then(() => {
+						const ok = options.validateStatus ? options.validateStatus(res.status) : res.ok;
+						if (ok) {
+							return response;
+						} else {
+							const error = new Error(`Request failed with status code ${res.status}`);
+							error.response = response;
+							error.config = options;
+							return Promise.reject(error);
+						}
+					});
+			})
+			.catch((error) => {
+				// Handle abort errors
+				if ((error && error.name === 'AbortError') || (error && error.code === 'ERR_CANCELED')) {
+					const cancelError = new Error('canceled');
+					cancelError.name = 'AbortError';
+					cancelError.message = 'canceled';
+					return Promise.reject(cancelError);
+				}
+
+				// For network errors, don't add response property
+				// For HTTP errors, response should already be set above
+				if (!error.response && error.message && /fetch|network/i.test(error.message)) {
+					// Network error - no response
+					return Promise.reject(error);
+				}
+
+				// Re-throw other errors
+				return Promise.reject(error);
+			});
 	}
 
 	/**
