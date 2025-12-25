@@ -141,6 +141,28 @@ function create(defaults) {
 	};
 
 	/**
+	 * Determines whether the payload is an error thrown by Axios
+	 * @public
+	 * @param {any} payload The value to test
+	 * @returns {boolean} True if the payload is an error thrown by Axios, otherwise false
+	 */
+	redaxios.isAxiosError = (payload) => {
+		return payload && typeof payload === 'object' && payload.isAxiosError === true;
+	};
+
+	/**
+	 * Config-specific merge-function which creates a new config-object
+	 * by merging two configuration objects together.
+	 * @public
+	 * @param {Options} config1
+	 * @param {Options} config2
+	 * @returns {Options} New object resulting from merging config2 to config1
+	 */
+	redaxios.mergeConfig = (config1, config2) => {
+		return deepMerge(config1 || {}, config2 || {}, false);
+	};
+
+	/**
 	 * @private
 	 * @template T, U
 	 * @param {T} opts
@@ -292,6 +314,7 @@ function create(defaults) {
 							const error = new Error(`Request failed with status code ${res.status}`);
 							error.response = response;
 							error.config = options;
+							error.isAxiosError = true;
 							return Promise.reject(error);
 						}
 					});
@@ -337,4 +360,11 @@ function create(defaults) {
 	return redaxios;
 }
 
-export default create();
+const axios = create();
+
+// Export named exports for compatibility with axios
+export const isCancel = axios.isCancel;
+export const isAxiosError = axios.isAxiosError;
+export const mergeConfig = axios.mergeConfig;
+
+export default axios;
