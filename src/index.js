@@ -25,6 +25,7 @@
  * @property {string} [auth] Authorization header value to send with the request
  * @property {string} [xsrfCookieName] Pass an Cross-site Request Forgery prevention cookie value as a header defined by `xsrfHeaderName`
  * @property {string} [xsrfHeaderName] The name of a header to use for passing XSRF cookies
+ * @property {boolean | ((config: Options) => boolean | undefined)} [withXSRFToken] Set XSRF token header for same-origin requests (default: true for same-origin, false for cross-origin)
  * @property {(status: number) => boolean} [validateStatus] Override status code handling (default: 200-399 is a success)
  * @property {Array<(body: any, headers?: RequestHeaders) => any?>} [transformRequest] An array of transformations to apply to the outgoing request
  * @property {string} [baseURL] a base URL from which to resolve all URLs
@@ -186,6 +187,21 @@ function create(defaults) {
 		return obj;
 	}
 
+	function readCookie(name) {
+	  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+	  return match ? decodeURIComponent(match[1]) : null;
+	}
+
+	const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
+	const pageOrigin = isBrowser ? window.location.origin : null;
+
+	function sameOrigin(url) {
+	  try {
+	    return new URL(url, pageOrigin).origin === pageOrigin;
+	  } catch {
+	    return false;
+	  }
+	}
 
 	/**
 	 * Issues a request.
@@ -223,14 +239,15 @@ function create(defaults) {
 			data = JSON.stringify(data);
 			customHeaders['content-type'] = 'application/json';
 		}
-
-		try {
-			// @ts-ignore providing the cookie name without header name is nonsensical anyway
-			customHeaders[options.xsrfHeaderName] = decodeURIComponent(
-				// @ts-ignore accessing match()[2] throws for no match, which is intentional
-				document.cookie.match(RegExp('(^|; )' + options.xsrfCookieName + '=([^;]*)'))[2]
-			);
-		} catch (e) {}
+		
+		if (isBrowser) {
+		  if (options.withXSRFToken ?? sameOrigin(url)) {
+		    const value = readCookie(options.xsrfCookieName || 'XSRF-TOKEN');
+		    if (value) {
+		      customHeaders[options.xsrfHeaderName || 'X-XSRF-TOKEN'] = value;
+		    }
+		  }
+		}
 
 		if (options.baseURL) {
 			url = url.replace(/^(?!.*\/\/)\/?/, options.baseURL + '/');
@@ -244,11 +261,20 @@ function create(defaults) {
 
 		const fetchFunc = options.fetch || fetch;
 
+		// Set credentials: default to 'same-origin' (like axios), or 'include' if withCredentials is true
+		let credentials = 'same-origin';
+
+		if (options.withCredentials === true) {
+		  credentials = 'include';
+		} else if (options.withCredentials === false) {
+		  credentials = 'omit';
+		}
+
 		return fetchFunc(url, {
 			method: (_method || options.method || 'get').toUpperCase(),
 			body: data,
 			headers: deepMerge(options.headers, customHeaders, true),
-			credentials: options.withCredentials ? 'include' : _undefined
+			credentials: credentials
 		}).catch((error) => {
 			// Mark network errors as axios errors
 			if (error && typeof error === 'object') {
