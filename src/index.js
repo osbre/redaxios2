@@ -65,6 +65,65 @@
  */
 
 /**
+ * @private
+ * @template T, U
+ * @param {T} opts
+ * @param {U} [overrides]
+ * @param {boolean} [lowerCase]
+ * @returns {{} & (T | U)}
+ */
+function deepMerge(opts, overrides, lowerCase) {
+	let out = /** @type {any} */ ({}),
+		i;
+	if (Array.isArray(opts)) {
+		// @ts-ignore
+		return opts.concat(overrides);
+	}
+	for (i in opts) {
+		const key = lowerCase ? i.toLowerCase() : i;
+		out[key] = opts[i];
+	}
+	for (i in overrides) {
+		const key = lowerCase ? i.toLowerCase() : i;
+		const value = /** @type {any} */ (overrides)[i];
+		out[key] = key in out && typeof value == 'object' ? deepMerge(out[key], value, key == 'headers') : value;
+	}
+	return out;
+}
+
+/**
+ * Determines whether the payload is an error thrown by redaxios
+ *
+ * @param {*} payload The value to test
+ * @returns {boolean} True if the payload is an error thrown by redaxios, otherwise false
+ */
+export function isAxiosError(payload) {
+	return typeof payload === 'object' && payload !== null && payload.isAxiosError === true;
+}
+
+/**
+ * Determines whether the value is a cancellation
+ *
+ * @param {*} value The value to test
+ * @returns {boolean} True if the value is a cancellation, otherwise false
+ */
+export function isCancel(value) {
+	return !!(value && (value.__CANCEL__ || (value instanceof AbortSignal && value.aborted)));
+}
+
+/**
+ * Config-specific merge-function which creates a new config-object
+ * by merging two configuration objects together.
+ *
+ * @param {Object} config1
+ * @param {Object} config2
+ * @returns {Object} New object resulting from merging config2 to config1
+ */
+export function mergeConfig(config1, config2) {
+	return deepMerge(config1 || {}, config2 || {}, false);
+}
+
+/**
  * @public
  * @param {Options} [defaults = {}]
  * @returns {redaxios}
@@ -127,32 +186,6 @@ function create(defaults) {
 		return obj;
 	}
 
-	/**
-	 * @private
-	 * @template T, U
-	 * @param {T} opts
-	 * @param {U} [overrides]
-	 * @param {boolean} [lowerCase]
-	 * @returns {{} & (T | U)}
-	 */
-	function deepMerge(opts, overrides, lowerCase) {
-		let out = /** @type {any} */ ({}),
-			i;
-		if (Array.isArray(opts)) {
-			// @ts-ignore
-			return opts.concat(overrides);
-		}
-		for (i in opts) {
-			const key = lowerCase ? i.toLowerCase() : i;
-			out[key] = opts[i];
-		}
-		for (i in overrides) {
-			const key = lowerCase ? i.toLowerCase() : i;
-			const value = /** @type {any} */ (overrides)[i];
-			out[key] = key in out && typeof value == 'object' ? deepMerge(out[key], value, key == 'headers') : value;
-		}
-		return out;
-	}
 
 	/**
 	 * Issues a request.
@@ -216,6 +249,13 @@ function create(defaults) {
 			body: data,
 			headers: deepMerge(options.headers, customHeaders, true),
 			credentials: options.withCredentials ? 'include' : _undefined
+		}).catch((error) => {
+			// Mark network errors as axios errors
+			if (error && typeof error === 'object') {
+				error.isAxiosError = true;
+				error.config = options;
+			}
+			return Promise.reject(error);
 		}).then((res) => {
 			for (const i in res) {
 				if (typeof res[i] != 'function') response[i] = res[i];
@@ -237,7 +277,14 @@ function create(defaults) {
 				.catch(Object)
 				.then(() => {
 					const ok = options.validateStatus ? options.validateStatus(res.status) : res.ok;
-					return ok ? response : Promise.reject(response);
+
+					if (ok) {
+						return response;
+					}
+
+					response.isAxiosError = true;
+
+					return Promise.reject(response);
 				});
 		});
 	}
@@ -258,6 +305,21 @@ function create(defaults) {
 	 * @public
 	 */
 	redaxios.create = create;
+
+	/**
+	 * @public
+	 */
+	redaxios.isAxiosError = isAxiosError;
+
+	/**
+	 * @public
+	 */
+	redaxios.isCancel = isCancel;
+
+	/**
+	 * @public
+	 */
+	redaxios.mergeConfig = mergeConfig;
 
 	return redaxios;
 }
