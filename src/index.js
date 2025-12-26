@@ -46,7 +46,7 @@
  * @property {string} statusText
  * @property {Options} config the request configuration
  * @property {T} data the decoded response body
- * @property {Headers} headers
+ * @property {Record<string, string>} headers
  * @property {boolean} redirect
  * @property {string} url
  * @property {ResponseType} type
@@ -110,6 +110,22 @@ function create(defaults) {
 	 * @returns {(array: Args[]) => R}
 	 */
 	redaxios.spread = (fn) => /** @type {any} */ (fn.apply.bind(fn, fn));
+
+
+	/**
+     * Convert Headers object to plain object for bracket notation access
+	 *
+	 * @private
+	 * @param {Headers} headers
+	 * @returns {Record<string, string>}
+	 */
+	function toAxiosHeaders(headers) {
+		const obj = {};
+		for (const [key, value] of headers.entries()) {
+			obj[key.toLowerCase()] = value;
+		}
+		return obj;
+	}
 
 	/**
 	 * @private
@@ -204,6 +220,8 @@ function create(defaults) {
 			for (const i in res) {
 				if (typeof res[i] != 'function') response[i] = res[i];
 			}
+
+			response.headers = toAxiosHeaders(res.headers);
 
 			if (options.responseType == 'stream') {
 				response.data = res.body;
